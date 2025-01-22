@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OTP Chatbot</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Assistant Icon -->
+  <div id="assistant-logo" onclick="toggleChatbox()">💬</div>
+
+  <!-- Chatbox -->
+  <div id="chatbox" class="minimized">
+    <div class="header">Welcome!!</div>
+    <div class="chat-log" id="chat-log"></div>
+
+    <!-- Email Section -->
+    <div class="chat-input" id="email-section">
+      <input type="email" id="user-email" placeholder="Enter your email" autofocus>
+      <button id="submit-email" onclick="requestOTP()">Submit</button>
+    </div>
+
+    <!-- OTP Section -->
+    <div class="chat-input" style="display:none" id="otp-section">
+      <input type="text" id="otp-code" placeholder="Enter OTP">
+      <button id="verify-otp" onclick="verifyOTP()">Verify</button>
+      <!-- Resend OTP Button -->
+      <button id="resend-otp" onclick="resendOTP()">Resend</button>
+    </div>
+
+    <!-- Domain Section -->
+    <div class="chat-input" style="display:none" id="domain-section">
+      <input type="text" id="domain-name" placeholder="Enter domain name">
+      <button id="submit-domain" onclick="getDomainSuggestions()">Submit</button>
+    </div>
+
+    <!-- General Chat Section (AI Chatbot) -->
+    <div class="chat-input" style="display:none" id="chatbot-section">
+      <input type="text" id="chatbot-query" placeholder="Ask me anything...">
+      <button id="submit-query" onclick="askChatbot()">Ask</button>
+    </div>
+  </div>
+
+  <!-- Reference external JavaScript file -->
+  <script src="script.js"></script>
+</body>
+</html>
