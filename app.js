@@ -27,11 +27,11 @@ app.use(session({
 
 // MySQL connection
 const db = mysql.createConnection({
-  host: 'localhost',
-  port: 3306,
-  user: 'root',
+  host: process.env.DB_HOST,
+  port: process.env.PORT,
+  user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
-  database: 'test',
+  database: process.env.DATABASE,
 });
 
 db.connect((err) => {
