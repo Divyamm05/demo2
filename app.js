@@ -1,47 +1,33 @@
 require('dotenv').config();
 const express = require('express');
-const mysql = require('mysql2');
 const nodemailer = require('nodemailer');
 const crypto = require('crypto');
 const { OpenAI } = require('openai');
 const session = require('express-session');
+const admin = require('firebase-admin'); // Firebase Admin SDK
 
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000;
+
 app.use(express.json());
 app.use(express.static('public'));
 
-// Set session timeout duration in milliseconds (e.g., 30 minutes)
-const SESSION_TIMEOUT = 30 * 60 * 1000;  // 30 minutes
+// Check for required environment variables
+if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS || !process.env.SESSION_SECRET || !process.env.OPENAI_API_KEY) {
+  console.error("Missing required environment variables. Please check your .env file.");
+  process.exit(1);
+}
 
-// Session management setup
-app.use(session({
-  secret: process.env.SESSION_SECRET,  // Use a strong secret key for session encryption
-  resave: false,
-  saveUninitialized: true,
-  cookie: { 
-    secure: false, // Secure cookies in production
-    maxAge: SESSION_TIMEOUT,  // Session will expire after 30 minutes of inactivity
-  }
-}));
+// Initialize Firebase Admin SDK
+const serviceAccount = require('/home/vr-dt-100/Downloads/test-ed0a8-firebase-adminsdk-fbsvc-5d471108c3.json'); // Path to your Firebase service account JSON file
 
-// MySQL connection
-const db = mysql.createConnection({
-  host: process.env.DB_HOST,
-  port: process.env.PORT,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: 'test',
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
 });
 
-db.connect((err) => {
-  if (err) {
-    console.error('Database connection failed:', err);
-    process.exit(1);
-  }
-  console.log('Connected to the database.');
-});
+const db = admin.firestore(); // Firestore instance
 
+// Email transporter setup
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
@@ -50,87 +36,95 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+// OpenAI setup
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
+
+// Session timeout duration in milliseconds (e.g., 30 minutes)
+const SESSION_TIMEOUT = 30 * 60 * 1000;
+
+// Session management setup
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET,
+    resave: false,
+    saveUninitialized: true,
+    cookie: {
+      secure: false, // Set to true if using HTTPS in production
+      maxAge: SESSION_TIMEOUT,
+    },
+  })
+);
 
 // Middleware to check session validity for protected routes
 function checkSession(req, res, next) {
   if (!req.session.email || !req.session.verified) {
     return res.status(401).json({ success: false, message: "Session expired. Please log in again." });
   }
-  next(); // Continue to the next route handler
+  next();
 }
 
-// API routes
-app.post('/api/check-email', (req, res) => {
+// API Routes
+
+// Check if email exists in Firestore and send OTP
+app.post('/api/check-email', async (req, res) => {
   const { email } = req.body;
 
   if (!email) {
     return res.status(400).json({ success: false, message: "Email is required." });
   }
 
-  // Store email in session
   req.session.email = email;
 
-  db.query('SELECT * FROM users WHERE email = ?', [email], (err, results) => {
-    if (err) {
-      console.error('Database error:', err);
-      return res.status(500).json({ success: false, message: "Internal server error." });
-    }
+  try {
+    const usersRef = db.collection('users');
+    const query = await usersRef.where('email', '==', email).get(); // Query to match email field
 
-    if (results.length === 0) {
+    if (query.empty) {
       return res.status(404).json({ success: false, message: "Email not found in our records." });
     }
+
+    const userDoc = query.docs[0]; // Access the first matching document
 
     const otp = crypto.randomInt(100000, 999999).toString();
     const expiresAt = new Date(Date.now() + 60000); // OTP expiration time (1 minute)
 
-    const query = 
-      `INSERT INTO otp_records (email, otp, expires_at)
-      VALUES (?, ?, ?)
-      ON DUPLICATE KEY UPDATE otp = ?, expires_at = ?;`;
+    const otpRef = db.collection('otp_records').doc(email);
+    await otpRef.set({
+      otp,
+      expires_at: expiresAt,
+    }, { merge: true });
 
-    db.query(query, [email, otp, expiresAt, otp, expiresAt], (err) => {
-      if (err) {
-        console.error('Error saving OTP to database:', err);
-        return res.status(500).json({ success: false, message: "Failed to save OTP." });
-      }
+    const mailOptions = {
+      from: process.env.EMAIL_USER,
+      to: email,
+      subject: 'Your OTP Code',
+      text: `Your OTP code is: ${otp}. It is valid for 1 minute.`,
+    };
 
-      const mailOptions = {
-        from: process.env.EMAIL_USER,
-        to: email,
-        subject: 'Your OTP Code',
-        text: `Your OTP code is: ${otp}. It is valid for 1 minute.`,
-      };
-
-      transporter.sendMail(mailOptions, (error) => {
-        if (error) {
-          console.error('Error sending email:', error);
-          return res.status(500).json({ success: false, message: "Failed to send OTP." });
-        }
-        res.json({ success: true, message: 'OTP sent to your email address.' });
-      });
-    });
-  });
+    await transporter.sendMail(mailOptions);
+    res.json({ success: true, message: 'OTP sent to your email address.' });
+  } catch (error) {
+    console.error('Error:', error);
+    res.status(500).json({ success: false, message: "Internal server error." });
+  }
 });
 
-app.post('/api/resend-otp', (req, res) => {
+// Resend OTP if valid or generate new OTP
+app.post('/api/resend-otp', async (req, res) => {
   const { email } = req.body;
 
   if (!email) {
     return res.status(400).json({ success: false, message: "Email is required." });
   }
 
-  db.query('SELECT * FROM otp_records WHERE email = ? AND expires_at > NOW()', [email], (err, results) => {
-    if (err) {
-      console.error('Database error:', err);
-      return res.status(500).json({ success: false, message: "Internal server error." });
-    }
+  try {
+    const otpRef = db.collection('otp_records').doc(email);
+    const otpDoc = await otpRef.get();
 
-    if (results.length > 0) {
-      const otpRecord = results[0];
-      const otp = otpRecord.otp;
+    if (otpDoc.exists && otpDoc.data().expires_at.toDate() > new Date()) {
+      const otp = otpDoc.data().otp;
 
       const mailOptions = {
         from: process.env.EMAIL_USER,
@@ -139,94 +133,72 @@ app.post('/api/resend-otp', (req, res) => {
         text: `Your OTP code is: ${otp}. It is still valid for 1 minute.`,
       };
 
-      transporter.sendMail(mailOptions, (error) => {
-        if (error) {
-          console.error('Error sending email:', error);
-          return res.status(500).json({ success: false, message: "Failed to send OTP." });
-        }
-        res.json({ success: true, message: 'OTP resent to your email address.' });
-      });
+      await transporter.sendMail(mailOptions);
+      res.json({ success: true, message: 'OTP resent to your email address.' });
     } else {
       const otp = crypto.randomInt(100000, 999999).toString();
-      const expiresAt = new Date(Date.now() + 60000); // OTP expiration time (1 minute)
+      const expiresAt = new Date(Date.now() + 60000);
 
-      const query = 
-        `INSERT INTO otp_records (email, otp, expires_at)
-        VALUES (?, ?, ?)
-        ON DUPLICATE KEY UPDATE otp = ?, expires_at = ?;`;
+      await otpRef.set({
+        otp,
+        expires_at: expiresAt,
+      }, { merge: true });
 
-      db.query(query, [email, otp, expiresAt, otp, expiresAt], (err) => {
-        if (err) {
-          console.error('Error saving OTP to database:', err);
-          return res.status(500).json({ success: false, message: "Failed to save OTP." });
-        }
+      const mailOptions = {
+        from: process.env.EMAIL_USER,
+        to: email,
+        subject: 'Your OTP Code',
+        text: `Your OTP code is: ${otp}. It is valid for 1 minute.`,
+      };
 
-        const mailOptions = {
-          from: process.env.EMAIL_USER,
-          to: email,
-          subject: 'Your OTP Code',
-          text: `Your OTP code is: ${otp}. It is valid for 1 minute.`,
-        };
-
-        transporter.sendMail(mailOptions, (error) => {
-          if (error) {
-            console.error('Error sending email:', error);
-            return res.status(500).json({ success: false, message: "Failed to send OTP." });
-          }
-          res.json({ success: true, message: 'New OTP sent to your email address.' });
-        });
-      });
+      await transporter.sendMail(mailOptions);
+      res.json({ success: true, message: 'New OTP sent to your email address.' });
     }
-  });
+  } catch (error) {
+    console.error('Error:', error);
+    res.status(500).json({ success: false, message: "Internal server error." });
+  }
 });
 
-app.post('/api/verify-otp', (req, res) => {
+// Verify OTP and update session
+app.post('/api/verify-otp', async (req, res) => {
   const { otp } = req.body;
-  const email = req.session.email; // Use the email stored in session
+  const email = req.session.email;
 
   if (!email || !otp) {
     return res.status(400).json({ success: false, message: "Email and OTP are required." });
   }
 
-  db.query('SELECT * FROM otp_records WHERE email = ? AND expires_at > NOW() ORDER BY expires_at DESC LIMIT 1', [email], (err, results) => {
-    if (err) {
-      console.error('Database error:', err);
-      return res.status(500).json({ success: false, message: "Internal server error." });
-    }
+  try {
+    const otpRef = db.collection('otp_records').doc(email);
+    const otpDoc = await otpRef.get();
 
-    if (results.length === 0) {
+    if (!otpDoc.exists || otpDoc.data().expires_at.toDate() < new Date()) {
       return res.status(404).json({ success: false, message: "OTP not found or expired." });
     }
 
-    const otpRecord = results[0];
-
-    if (otp !== otpRecord.otp) {
+    if (otp !== otpDoc.data().otp) {
       return res.status(400).json({ success: false, message: "Invalid OTP." });
     }
 
-    req.session.verified = true; // Set user as verified in session
-    req.session.userState = 'awaiting_domain_input'; // Store state
+    req.session.verified = true;
+    req.session.userState = 'awaiting_domain_input';
 
-    // Don't clear OTP and email yet, wait until the session expires or the user completes the flow.
+    await otpRef.delete();
 
-    // Delete OTP record after verification
-    db.query('DELETE FROM otp_records WHERE email = ?', [email], (err) => {
-      if (err) {
-        console.error('Error deleting OTP records:', err);
-      }
-    });
-
-    res.json({ success: true, message: "OTP verified successfully. Please provide a domain name for suggestions." });
-  });
+    res.json({ success: true, message: "OTP verified successfully." });
+  } catch (error) {
+    console.error('Error:', error);
+    res.status(500).json({ success: false, message: "Internal server error." });
+  }
 });
 
-// Protected routes using the checkSession middleware
+// Protected route for domain suggestions (requires session)
 app.post('/api/domain-suggestions', checkSession, async (req, res) => {
   const { domain } = req.body;
-  const email = req.session.email; // Use the email stored in session
 
-  if (req.session.userState !== 'awaiting_domain_input') {
-    return res.status(400).json({ success: false, message: "Please verify your email first." });
+  if (!domain) {
+    return res.status(400).json({ success: false, message: "Domain is required." });
   }
 
   try {
@@ -239,20 +211,12 @@ app.post('/api/domain-suggestions', checkSession, async (req, res) => {
       max_tokens: 100,
     });
 
-    const suggestions = response.choices[0].message.content.trim();
-
-    if (!suggestions) {
-      return res.status(404).json({ success: false, message: "No suggestions found for the given domain." });
-    }
-
-    const suggestionArray = suggestions.split("\n").map(s => s.trim());
-
-    req.session.userState = 'domain_suggested'; // Update state
+    const suggestions = response.choices[0].message.content.trim().split('\n').map(s => s.trim());
 
     res.json({
       success: true,
-      suggestions: suggestionArray,
-      message: "Domain suggestions provided. Now you can ask anything!",
+      suggestions,
+      message: "Domain suggestions provided.",
     });
   } catch (error) {
     console.error('Error generating domain suggestions:', error);
@@ -260,40 +224,34 @@ app.post('/api/domain-suggestions', checkSession, async (req, res) => {
   }
 });
 
+// Chat with OpenAI (protected route)
 app.post('/api/chat', checkSession, async (req, res) => {
   const { query } = req.body;
-  const email = req.session.email; // Use the email stored in session
 
   if (!query) {
     return res.status(400).json({ success: false, message: "Query is required." });
-  }
-
-  if (req.session.userState !== 'domain_suggested') {
-    return res.status(400).json({ success: false, message: "Please get domain suggestions first." });
   }
 
   try {
     const response = await openai.chat.completions.create({
       model: "gpt-3.5-turbo",
       messages: [
-        { role: "system", content: `You are an assistant helping with domain suggestions. The domain provided by the user is: ${req.session.domain}` },
         { role: "user", content: query },
       ],
       max_tokens: 150,
     });
 
-    const botResponse = response.choices[0].message.content;
-
     res.json({
       success: true,
-      answer: botResponse,
+      answer: response.choices[0].message.content,
     });
   } catch (error) {
-    console.error('Error during AI chat:', error);
+    console.error('Error during chat:', error);
     res.status(500).json({ success: false, message: "Failed to process your question." });
   }
 });
 
+// Start the server
 app.listen(port, () => {
   console.log(`Server is running on http://localhost:${port}`);
 });
