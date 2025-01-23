@@ -202,21 +202,33 @@ app.post('/api/domain-suggestions', checkSession, async (req, res) => {
   }
 
   try {
+    // Initialize session conversation history if not already set
+    if (!req.session.conversationHistory) {
+      req.session.conversationHistory = [];
+    }
+
+    // Add domain suggestion request to the conversation history
+    req.session.conversationHistory.push({ role: 'user', content: `Provide 10 domain name suggestions related to: ${domain}` });
+
+    // Generate domain suggestions using OpenAI
     const response = await openai.chat.completions.create({
       model: "gpt-3.5-turbo",
-      messages: [
-        { role: "system", content: "You are an assistant that provides 10 creative domain name suggestions based on the input domain." },
-        { role: "user", content: `Provide 10 domain name suggestions related to: ${domain}` },
-      ],
+      messages: req.session.conversationHistory, // Include the full conversation history
       max_tokens: 100,
     });
 
     const suggestions = response.choices[0].message.content.trim().split('\n').map(s => s.trim());
 
+    // Store the suggestions in the conversation history
+    req.session.conversationHistory.push({
+      role: 'assistant',
+      content: suggestions.join(', '), // Store the suggestions as GPT's response
+    });
+
     res.json({
       success: true,
       suggestions,
-      message: "Domain suggestions provided.",
+      message: "Domain suggestions provided and stored in session.",
     });
   } catch (error) {
     console.error('Error generating domain suggestions:', error);
@@ -224,6 +236,7 @@ app.post('/api/domain-suggestions', checkSession, async (req, res) => {
   }
 });
 
+// Chat with OpenAI (protected route)
 // Chat with OpenAI (protected route)
 app.post('/api/chat', checkSession, async (req, res) => {
   const { query } = req.body;
@@ -233,17 +246,32 @@ app.post('/api/chat', checkSession, async (req, res) => {
   }
 
   try {
+    // Initialize session conversation history if not already set
+    if (!req.session.conversationHistory) {
+      req.session.conversationHistory = [];
+    }
+
+    // Add the new user query to the conversation history
+    req.session.conversationHistory.push({ role: 'user', content: query });
+
+    // Send the conversation history to OpenAI to continue the chat
     const response = await openai.chat.completions.create({
       model: "gpt-3.5-turbo",
-      messages: [
-        { role: "user", content: query },
-      ],
+      messages: req.session.conversationHistory, // Pass the full conversation history
       max_tokens: 150,
+    });
+
+    const assistantReply = response.choices[0].message.content;
+
+    // Add the assistant's response to the conversation history
+    req.session.conversationHistory.push({
+      role: 'assistant',
+      content: assistantReply,
     });
 
     res.json({
       success: true,
-      answer: response.choices[0].message.content,
+      answer: assistantReply,
     });
   } catch (error) {
     console.error('Error during chat:', error);
