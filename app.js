@@ -222,7 +222,7 @@ app.post('/api/domain-suggestions', checkSession, async (req, res) => {
     // Store the suggestions in the conversation history
     req.session.conversationHistory.push({
       role: 'assistant',
-      content: suggestions.join(', '), // Store the suggestions as GPT's response
+      content: suggestions.join('\n'), // Store the suggestions as GPT's response, each on a new line
     });
 
     res.json({
@@ -236,6 +236,7 @@ app.post('/api/domain-suggestions', checkSession, async (req, res) => {
   }
 });
 
+// Chat with OpenAI (protected route)
 // Chat with OpenAI (protected route)
 // Chat with OpenAI (protected route)
 app.post('/api/chat', checkSession, async (req, res) => {
@@ -278,6 +279,7 @@ app.post('/api/chat', checkSession, async (req, res) => {
     res.status(500).json({ success: false, message: "Failed to process your question." });
   }
 });
+
 
 // Start the server
 app.listen(port, () => {
