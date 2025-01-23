@@ -19,7 +19,7 @@ if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS || !process.env.SESSION_S
 }
 
 // Initialize Firebase Admin SDK
-const serviceAccount = require('/home/vr-dt-100/Downloads/test-ed0a8-firebase-adminsdk-fbsvc-5d471108c3.json'); // Path to your Firebase service account JSON file
+const serviceAccount = JSON.parse(Buffer.from(process.env.FIREBASE_CREDENTIALS, 'base64').toString('utf-8'));
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
